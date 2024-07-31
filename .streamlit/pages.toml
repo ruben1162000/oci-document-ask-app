@@ -1,0 +1,34 @@
+[[pages]]
+path = "pages_py_files/1_Add_Doc_Store.py"
+name = "Add Document Store"
+icon = ":file_folder:"
+
+[[pages]]
+path = "pages_py_files/2_Edit_Doc_Store.py"
+name = "Edit Document Store"
+icon = ":pencil:"
+
+[[pages]]
+path = "pages_py_files/3_Search_Engine_OCI.py"
+name = "Search Engine OCI"
+icon = ":sleuth_or_spy:"
+
+[[pages]]
+path = "pages_py_files/4_Chat_With_OCI.py"
+name = "Chat With OCI"
+icon = ":speech_balloon:"
+
+[[pages]]
+path = "pages_py_files/5_Q&A_With_OCI.py"
+name = "Q&A With OCI"
+icon = ":question:"
+
+[[pages]]
+path = "pages_py_files/6_Upload_Chat_Store_Docs.py"
+name = "Upload Chat Store Documents"
+icon = ":books:"
+
+[[pages]]
+path = "pages_py_files/7_Upload_Search_Store_Docs.py"
+name = "Upload Search Store Documents"
+icon = ":ledger:"

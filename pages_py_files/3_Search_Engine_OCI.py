@@ -5,7 +5,7 @@ from streamlit_js_eval import streamlit_js_eval
 from streamlit_pdf_viewer import pdf_viewer
 import io
 
-st.set_page_config(layout="wide",page_title="Search Engine OCI")
+# st.set_page_config(layout="wide",page_title="Search Engine OCI")
 fs.invalidate_cache()
 
 def refresh_page():

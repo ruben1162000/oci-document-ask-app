@@ -3,7 +3,7 @@ import streamlit as st
 from genai_backend import *
 from streamlit_js_eval import streamlit_js_eval
 
-st.set_page_config(layout="wide",page_title="Add Document Store")
+# st.set_page_config(layout="wide",page_title="Add Document Store")
 
 
 def refresh_page():

@@ -3,13 +3,13 @@ import streamlit as st
 from genai_backend import *
 from streamlit_js_eval import streamlit_js_eval
 
-st.set_page_config(layout="wide",page_title="Q&A With OCI")
+# st.set_page_config(layout="wide",page_title="Q&A With OCI")
 
 
 def refresh_page():
     streamlit_js_eval(js_expressions="parent.window.location.reload()")
-st.header("OCI Ask")
-doc_stores_df = get_document_stores()
+# st.header("OCI Ask")
+doc_stores_df = get_chat_document_stores()
 col1,col2 = st.columns(2)
 with col1:
     query = st.text_area("Ask Something....",placeholder="Ask Something....",key="query_qa",height=260,label_visibility='collapsed')

@@ -4,12 +4,12 @@ import streamlit as st
 from genai_backend import *
 from streamlit_js_eval import streamlit_js_eval
 
-st.set_page_config(layout="wide",page_title="Upload Chat Store Docs")
+# st.set_page_config(layout="wide",page_title="Upload Chat Store Docs")
 
 
 def refresh_page():
     streamlit_js_eval(js_expressions="parent.window.location.reload()")
-st.header("Upload Chat Store Docs")
+# st.header("Upload Chat Store Docs")
 doc_stores_df = get_chat_document_stores()
 col1,col2 = st.columns(2)
 with col1:

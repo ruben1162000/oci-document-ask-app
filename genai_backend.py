@@ -1,6 +1,6 @@
 
 import pandas as pd
-import oracledb,oci,json,base64
+import oracledb,oci,json,base64,redis
 from collections import deque
 from ocifs import OCIFileSystem
 from langchain_community.embeddings import OCIGenAIEmbeddings
@@ -31,15 +31,16 @@ from langchain_core.output_parsers import StrOutputParser
 import os,tempfile,shutil
 load_dotenv()
 (DBHOST,DBUNAME,DBPASS,DBSERVICE,INSTANT_CLIENT_PATH,COMPARTMENT_ID,DOC_OCR_BUCKET,DOC_OCR_BUCKET_PREFIX,
-GENAI_SERVICE_ENDPOINT,DOC_INPUT_BUCKET_PREFIX,OCI_REDIS_URL,LOCAL_REDIS_URL,ENV_TYPE) = (
+GENAI_SERVICE_ENDPOINT,DOC_INPUT_BUCKET_PREFIX,OCI_REDIS_URL,LOCAL_REDIS_URL,ENV_TYPE,REDIS_CHAT_NAME_PREFIX) = (
 os.getenv("DBHOST"),os.getenv("DBUNAME"),os.getenv("DBPASS"),os.getenv("DBSERVICE"),os.getenv("INSTANT_CLIENT_PATH"),os.getenv("COMPARTMENT_ID"),
 os.getenv("DOC_OCR_BUCKET"),os.getenv("DOC_OCR_BUCKET_PREFIX"),os.getenv("GENAI_SERVICE_ENDPOINT"),os.getenv("DOC_INPUT_BUCKET_PREFIX"),
-os.getenv("OCI_REDIS_URL"),os.getenv("LOCAL_REDIS_URL"),os.getenv("ENV_TYPE"))
+os.getenv("OCI_REDIS_URL"),os.getenv("LOCAL_REDIS_URL"),os.getenv("ENV_TYPE"),os.getenv("REDIS_CHAT_NAME_PREFIX"))
+
 REDIS_URL = OCI_REDIS_URL if ENV_TYPE=="PROD" else LOCAL_REDIS_URL
 
 OCI_CHAT_MODELS =["cohere.command-r-16k","cohere.command-r-plus","meta.llama-3-70b-instruct"]
 OCI_GEN_MODELS = ["cohere.command","cohere.command-light","meta.llama-2-70b-chat"]
-ALLOWED_FILE_TYPES = ["pdf","png","jpg","txt","html"]
+ALLOWED_FILE_TYPES = ["pdf","txt","html"]
 CONFIG = oci.config.from_file()
 OBJECT_STORAGE_CLIENT = oci.object_storage.ObjectStorageClient(CONFIG)
 AIDOC_CLIENT = oci.ai_document.AIServiceDocumentClient(CONFIG)
@@ -79,6 +80,8 @@ def get_document_store_sources(doc_store):
     l = [f"oci://{y['name']}" for x in fs.listdir(path) for y in fs.listdir(f"oci://{x['name']}")]
     return l
 
+
+
 def truncate_document_store(doc_store):
     try:        
         conn = __get_conn()
@@ -86,9 +89,12 @@ def truncate_document_store(doc_store):
             cursor.execute(f"TRUNCATE TABLE {doc_store}")
         conn.commit()
         conn.close()
+        __delete_object_store_folder(BUCKET_FILE_PATH_PREFIX+doc_store)
+        __delete_object_store_folder(BUCKET_OCR_PATH_PREFIX+doc_store)
     except Exception as e:
         conn.close()
         raise e
+
 
 def register_document_store(name,description,is_search_engine_store=False):
     try:
@@ -136,6 +142,8 @@ def delete_document_store(name):
         conn.commit()
         conn.close()
         __delete_object_store_folder(BUCKET_FILE_PATH_PREFIX+name)
+        __delete_object_store_folder(BUCKET_OCR_PATH_PREFIX+name)
+        
     except Exception as e:
         conn.close()
         raise e
@@ -292,9 +300,8 @@ def push_documents_to_chat_store(doc_store,files,chunk_size=500,chunk_overlap=20
             for x in data:
                 x.metadata["source"]=oci_path            
             docs.extend(data)       
-        elif ext in ("png","jpg"):
+        else:
             pass
-            ##oci events triggers to be written for this addition to store
     shutil.rmtree(temp_dir)
     __add_documents(doc_store,docs)
     return docs
@@ -336,7 +343,6 @@ def list_search_store_ocr_jobs(doc_store):
     ans = deque()
     oci_dir = BUCKET_OCR_PATH_PREFIX+f"{doc_store}"
     job_ocids = [x.split("/")[-1] for x in fs.ls(oci_dir)]
-    print(job_ocids)
     for job_ocid in job_ocids:
         try:
             res=AIDOC_CLIENT.get_processor_job(job_ocid)
@@ -365,12 +371,13 @@ def list_search_store_ocr_json(doc_store):
 
 
 def process_search_store_json(doc_store,json_df):
+    fs.invalidate_cache()
     INCH_TO_PIXEL = 72
-    docs = deque()
     n = json_df.shape[0]
     for i in range(n):
         json_obj,source = json_df.iloc[i][["content","json_file"]].tolist()
         source = f"oci://{DOC_OCR_BUCKET}@{NAMESPACE_NAME}/{source.split('/',8)[-1][:-5]}"
+        docs = deque()
         for page in json_obj["pages"]: 
             page_num = page["pageNumber"]
             page_width, page_height = page["dimensions"]["width"]*INCH_TO_PIXEL,page["dimensions"]["height"]*INCH_TO_PIXEL
@@ -379,8 +386,9 @@ def process_search_store_json(doc_store,json_df):
                     continue
                 top_left,_,bottom_right,_=line["boundingPolygon"]["normalizedVertices"]
                 x,y,width,height = top_left["x"]*page_width, top_left["y"]*page_height,(bottom_right["x"]-top_left["x"])*page_width,(bottom_right["y"]-top_left["y"])*page_height
-                docs.append(Document(page_content=line["text"],metadata={"page":page_num,"x":x,"y":y,"width":width,"height":height,"source":source}))
-    __add_documents(doc_store,docs)
+                docs.append(Document(page_content=line["text"],metadata={"page":page_num,"x":x,"y":y,"width":width,"height":height,"source":source}))                
+        __add_documents(doc_store,docs)
+    fs.bulk_delete(json_df["json_file"].tolist())
     
 
 
@@ -418,9 +426,42 @@ def search_docs(query,doc_store,n_results=30):
     except Exception as e:
         conn.close()
         raise e
+
+def __get_redis_connection():
+    return redis.from_url(REDIS_URL)
+
+def get_all_chat_names():        
+    r = __get_redis_connection()
+    n = len(REDIS_CHAT_NAME_PREFIX)    
+    pattern = REDIS_CHAT_NAME_PREFIX+"*"
+    cursor = '0'
+    keys_with_prefix = deque()
+    while cursor != 0:
+        cursor, keys = r.scan(cursor=cursor, match=pattern)
+        keys_with_prefix.extend(keys)
+    ans = [x.decode()[n:] for x in keys_with_prefix]
+    # ans = [x.decode()[n:] for x in r.keys(REDIS_CHAT_NAME_PREFIX+"*")]
+    r.close()
+    return ans
+
+def create_chat(chat_name):
+    r = __get_redis_connection()
+    r.lpush(f"{REDIS_CHAT_NAME_PREFIX}{chat_name}", '')
+    r.ltrim(f"{REDIS_CHAT_NAME_PREFIX}{chat_name}", 1, 0)
+
+def rename_chat(old_chat_name,new_chat_name):
+    r = __get_redis_connection()
+    r.rename(REDIS_CHAT_NAME_PREFIX+old_chat_name,REDIS_CHAT_NAME_PREFIX+new_chat_name)
+    r.close()
+
+def get_chat_messages(chat_name):
+    chat_history = RedisChatMessageHistory(session_id=chat_name, url=REDIS_URL,key_prefix=REDIS_CHAT_NAME_PREFIX)
+    messages = chat_history.messages
+    chat_history.redis_client.close()
+    return messages
     
 
-def chat(session_id,prompt,doc_store,model_id="cohere.command-r-16k",chat_history_range=4,context_retrieval_limit=10):
+def chat(chat_name,prompt,doc_store,model_id="cohere.command-r-16k",chat_history_limit=4,context_retrieval_limit=10):
     try:
         conn = __get_conn()
         with conn.cursor() as cursor:
@@ -456,9 +497,9 @@ def chat(session_id,prompt,doc_store,model_id="cohere.command-r-16k",chat_histor
         prompt_template_chat = ChatPromptTemplate.from_messages(messages2)
         # output_parser = StrOutputParser()
         
-        chat_history = RedisChatMessageHistory(session_id=session_id, url=REDIS_URL) 
+        chat_history = RedisChatMessageHistory(session_id=chat_name, url=REDIS_URL,key_prefix=REDIS_CHAT_NAME_PREFIX) 
         try:
-            history_messages = chat_history.messages[-chat_history_range:]
+            history_messages = chat_history.messages[-chat_history_limit:]
         except:
             history_messages = chat_history.messages
         vectorstore = __get_oracle_db_vectorstore(conn,doc_store)
@@ -468,7 +509,8 @@ def chat(session_id,prompt,doc_store,model_id="cohere.command-r-16k",chat_histor
         chain = ( prompt_template_chat | chat_model | StrOutputParser())
         ai_message = chain.invoke({"context":context,"question":prompt,"history":history_messages})
         chat_history.add_user_message(prompt)
-        chat_history.add_ai_message(ai_message)               
+        chat_history.add_ai_message(ai_message)
+        chat_history.redis_client.close()           
         conn.close()
         return ai_message
     except Exception as e:
